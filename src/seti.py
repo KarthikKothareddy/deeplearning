@@ -2,13 +2,10 @@
 
 import os
 from PIL import Image
-from scipy.signal import convolve
 import cv2
-import pandas as pd
 import numpy as np
 import time
 
-import resnet
 from sklearn.preprocessing import LabelEncoder
 import tensorflow as tf
 from keras import callbacks
@@ -27,7 +24,7 @@ plt.interactive(False)
 class SETI(object):
 
     def __init__(self):
-
+        """
         self.sclasses = ["brightpixel",
                          "narrowband",
                          "narrowbanddrd",
@@ -37,15 +34,15 @@ class SETI(object):
                          "squigglesquarepulsednarrowband"]
         """
         self.sclasses = ["brightpixel", "noise"]
-        """
+
         self.model_name = "seti_model"
-        self.epochs = 150
-        self.learning_rate = 0.001
+        self.epochs = 1
+        self.learning_rate = 0.0005
         self.batch_size = 50
         self.output_classes = len(self.sclasses)
         self.loss = "categorical_crossentropy"
-        self.parameter_scaling = 8
-        self.regularizer = 1.0e-7
+        self.parameter_scaling = 24
+        self.regularizer = 0.0 #1.0e-7
         self.model_location = "./model"
         self.tensorboard = "./tensorboard"
         self.channels = 1
@@ -53,8 +50,8 @@ class SETI(object):
         self.gaussian_blurr = False
         self.histogram_equalize = False
         self.bitwise_not = False
-        self.augument = True
-        self.augument_size = 500
+        self.augument = False
+        self.augument_size = 100
         self.image_width_original = 512
         self.image_hieght_original = 384
         self.image_width = 384
@@ -62,8 +59,8 @@ class SETI(object):
         self.input_shape = (self.image_width, self.image_hieght, self.channels)
 
     def get_data(self, primary_dir, augument=False):
-        X = []
-        Y = []
+        X = np.empty(shape=(0, self.image_width, self.image_hieght, self.channels))
+        Y = np.empty(shape=(0, ))
         _global_index = -1
         for sclass in self.sclasses:
             # loop through directories
@@ -87,12 +84,15 @@ class SETI(object):
                 _y.extend(y_aug)
                 _global_index += self.augument_size
                 print("Augumented {} images for the class: \"{}\"".format(self.augument_size, sclass))
+            _x = np.array(_x)
+            _y = np.array(_y)
+            print("yshape: {}".format(_y.shape))
             # into global list
-            X.extend(_x)
-            Y.extend(_y)
+            X = np.append(X, _x, axis=0)
+            Y = np.append(Y, _y, axis=0)
             print("Data Extraction complete for class: \"{}\"".format(sclass))
             print("Global Index: {}".format(_global_index))
-        return np.array(X), np.array(Y)
+        return X, Y
 
     def process(self, image):
         image = cv2.resize(image, (self.image_width, self.image_hieght))
@@ -113,7 +113,12 @@ class SETI(object):
     def preprocess_image(self, image):
         mean = np.mean(image)
         std = np.std(image)
-        image = np.clip(image, mean-3.5*std, mean+3.5*std)
+        clipped = np.clip(image, mean-3.5*std, mean+3.5*std)
+        morphed = cv2.morphologyEx(clipped, cv2.MORPH_CLOSE, kernel=np.ones((2, 2), dtype=np.float32))
+        sobelx = cv2.Sobel(morphed, cv2.CV_64F, 0, 1, 2)
+        sobely = cv2.Sobel(morphed, cv2.CV_64F, 1, 0, 2)
+        blended = cv2.addWeighted(src1=sobelx, alpha=0.8, src2=sobely, beta=sobely, gamma=0)
+
         """
         # adjusted calculations
         mu = image.mean(axis=(0, 1))
@@ -129,7 +134,7 @@ class SETI(object):
         image_blur[image_blur > 0] = 1
         return image_blur
         """
-        return image
+        return blended
 
     def augument_images(self, images):
         datagen = ImageDataGenerator(width_shift_range=0.1,
@@ -155,31 +160,35 @@ class SETI(object):
         _model.add(Conv2D(M, (3, 3), input_shape=self.input_shape, kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
         _model.add(MaxPooling2D(pool_size=(3, 3)))
+        _model.add(Dropout(0.2))
 
         # convolution 2
         _model.add(Conv2D(2*M, (3, 3), kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
         _model.add(MaxPooling2D(pool_size=(3, 3)))
+        _model.add(Dropout(0.2))
 
         # convolution 3
         _model.add(Conv2D(3*M, (3, 3), kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
         _model.add(MaxPooling2D(pool_size=(3, 3)))
+        _model.add(Dropout(0.2))
 
         # convolution 4
         _model.add(Conv2D(4*M, (3, 3), kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
         _model.add(MaxPooling2D(pool_size=(2, 2)))
+        _model.add(Dropout(0.2))
 
         # convolution 5
         _model.add(Conv2D(5*M, (3, 3), kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
+        _model.add(Dropout(0.2))
 
         # convolution 6
         _model.add(Conv2D(6*M, (3, 3), kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
-
-        # _model.add(Dropout(0.5))
+        _model.add(Dropout(0.2))
 
         # flattening layer
         _model.add(Flatten())
@@ -187,17 +196,17 @@ class SETI(object):
         # first dense layer
         _model.add(Dense(units=6*M, kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
-        _model.add(Dropout(0.5))
+        _model.add(Dropout(0.3))
 
         # second dense layer
         _model.add(Dense(units=6*M, kernel_regularizer=l1(L1)))
         _model.add(LeakyReLU(alpha=0.1))
-        _model.add(Dropout(0.5))
+        _model.add(Dropout(0.3))
 
         # third dense layer
-        # _model.add(Dense(units=5*M, kernel_regularizer=l1(L1)))
-        # _model.add(LeakyReLU(alpha=0.1))
-        # _model.add(Dropout(0.5))
+        _model.add(Dense(units=6*M, kernel_regularizer=l1(L1)))
+        _model.add(LeakyReLU(alpha=0.1))
+        _model.add(Dropout(0.3))
 
         # output layer
         _model.add(Dense(self.output_classes, activation="softmax"))
@@ -295,17 +304,17 @@ if __name__ == "__main__":
     tick = time.time()
     seti = SETI()
 
-    X_train, y_train = seti.get_data(primary_dir=os.path.join(os.getcwd(), "primary_small", "train"), augument=seti.augument)
+    X_train, y_train = seti.get_data(primary_dir=os.path.join(os.getcwd(), r"C:\Users\Paperspace\IdeaProjects\seti", "train"), augument=seti.augument)
     train_time = time.time()
     print("Pre Processing time for Train Images:  {} seconds".format(train_time-tick))
 
-    X_val, y_val = seti.get_data(primary_dir=os.path.join(os.getcwd(), "primary_small", "valid"))
+    X_val, y_val = seti.get_data(primary_dir=os.path.join(os.getcwd(), r"C:\Users\Paperspace\IdeaProjects\seti", "valid"))
     val_time = time.time()
     print("Pre Processing time for Validation Images:  {} seconds".format(val_time-train_time))
 
     model = seti.train(X_train, y_train, X_val, y_val)
 
-    X_test, y_test = seti.get_data(primary_dir=os.path.join(os.getcwd(), "primary_small", "test"))
+    X_test, y_test = seti.get_data(primary_dir=os.path.join(os.getcwd(), r"C:\Users\Paperspace\IdeaProjects\seti", "test"))
     seti.test(model, X_test, y_test)
 
     print("Total Execution time:  {} seconds".format(time.time()-tick))
